@@ -3,17 +3,27 @@
 #include <I2Cdev.h>
 #include <MPU6050_6Axis_MotionApps20.h>
 #include <Wire.h>
+#include <PID_v1.h>
+
+const double Kp = 900, Ki = 3500, Kd = 40;
+double setPoint = 0.2, input, output;
+PID myPID(&input, &output, &setPoint, Kp, Ki, Kd, REVERSE);
 
 // Pin mapping
 const int IR_PIN = 7,
           PING_TRIG = 4,
           PING_ECHO = 5,
-          MOTOR_AA = 11,
-          MOTOR_AB = 12,
+          MOTOR_AA = 12,
+          MOTOR_AB = 11,
           MOTOR_BA = 9,
           MOTOR_BB = 10;
 
 MPU6050 mpu;
+
+int motorAspeed = 0,
+    motorBspeed = 0,
+    motorAoffset = 0,
+    motorBoffset = 0;
 
 bool dmpReady = false;
 uint8_t mpuIntStatus;
@@ -22,20 +32,41 @@ uint16_t packetSize;    // expected DMP packet size (default is 42 bytes)
 uint16_t fifoCount;     // count of all bytes currently in FIFO
 uint8_t fifoBuffer[64]; // FIFO storage buffer
 
-// orientation/motion vars
-Quaternion q;           // [w, x, y, z]         quaternion container
-VectorFloat gravity;    // [x, y, z]            gravity vector
-float ypr[3];           // [yaw, pitch, roll]   yaw/pitch/roll container and gravity vector
+Quaternion q;
+VectorFloat gravity;
+float ypr[3] = { 0, 0, 0 };  // [yaw, pitch, roll]
 
 volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt pin has gone high
 void dmpDataReady() {
     mpuInterrupt = true;
 }
 
+void updateMotors() {
+    updateMotorPWM(motorAspeed + motorAoffset, MOTOR_AA, MOTOR_AB);
+    updateMotorPWM(motorBspeed + motorBoffset, MOTOR_BA, MOTOR_BB);
+}
+
+void updateMotorPWM(int speed, const int pinA, const int pinB) {
+    if (speed < 0) {
+        digitalWrite(pinA, HIGH);
+        analogWrite(pinB, 255 + speed);
+    } else {
+        digitalWrite(pinA, LOW);
+        analogWrite(pinB, speed);
+    }
+}
+
 void setup() {
+    pinMode(MOTOR_AA, OUTPUT);
+    pinMode(MOTOR_AB, OUTPUT);
+    pinMode(MOTOR_BA, OUTPUT);
+    pinMode(MOTOR_BB, OUTPUT);
+    updateMotors();
+    myPID.SetMode(AUTOMATIC);
+    myPID.SetOutputLimits(-255, 255);
+    myPID.SetSampleTime(10);
+
     Wire.begin();
-    Serial.begin(115200);
-    while (!Serial);
     mpu.initialize();
 
     devStatus = mpu.dmpInitialize();
@@ -50,12 +81,9 @@ void setup() {
         mpu.setDMPEnabled(true);
         attachInterrupt(0, dmpDataReady, RISING);
         mpuIntStatus = mpu.getIntStatus();
-        dmpReady = true;
         packetSize = mpu.dmpGetFIFOPacketSize();
-    } else {
-        Serial.print(F("DMP Initialization failed (code "));
-        Serial.print(devStatus);
-        Serial.println(F(")"));
+        delay(5000);
+        dmpReady = true;
     }
 }
 
@@ -65,7 +93,10 @@ void loop() {
 
     // wait for MPU interrupt or extra packet(s) available
     while (!mpuInterrupt && fifoCount < packetSize) {
-        // other program behavior stuff here
+        input = ypr[1];
+        myPID.Compute();
+        motorAoffset = motorBoffset = output;
+        updateMotors();
     }
 
     // reset interrupt flag and get INT_STATUS byte
@@ -79,8 +110,6 @@ void loop() {
     if ((mpuIntStatus & 0x10) || fifoCount == 1024) {
         // reset so we can continue cleanly
         mpu.resetFIFO();
-        Serial.println(F("FIFO overflow!"));
-
     // otherwise, check for DMP data ready interrupt (this should happen frequently)
     } else if (mpuIntStatus & 0x02) {
         // wait for correct available data length, should be a VERY short wait
@@ -96,11 +125,5 @@ void loop() {
         mpu.dmpGetQuaternion(&q, fifoBuffer);
         mpu.dmpGetGravity(&gravity, &q);
         mpu.dmpGetYawPitchRoll(ypr, &q, &gravity);
-        Serial.print("ypr\t");
-        Serial.print(ypr[0] * 180/M_PI);
-        Serial.print("\t");
-        Serial.print(ypr[1] * 180/M_PI);
-        Serial.print("\t");
-        Serial.println(ypr[2] * 180/M_PI);
     }
 }
