@@ -7,8 +7,18 @@
 #include <NewPing.h>
 #include <IRremote.h>
 
-const double Kp = 900, Ki = 4000, Kd = 40;
-double setPoint = 0.2, input, output;
+const unsigned long IR_OK    = 0xFF02FD,
+                    IR_UP    = 0xFF629D,
+                    IR_DOWN  = 0xFFA857,
+                    IR_LEFT  = 0xFF22DD,
+                    IR_RIGHT = 0xFFC23D,
+                    IR_REP   = 0xFFFFFFFF;
+
+const double Kp = 1200, Ki = 5000, Kd = 60;
+const double SP_EQ = 0.19, SP_FWD = 0.23, SP_RIGHT = 0.19, SP_LEFT = 0.2;
+const double TURN_LEFT = -10, TURN_RIGHT = 8;
+double turnParam = 0;
+double setPoint = SP_EQ, input, output;
 
 // Pin mapping
 const int IR_PIN = 7,
@@ -27,9 +37,9 @@ IRrecv ir(IR_PIN);
 decode_results irRes;
 
 int motorAspeed = 0,
-    motorBspeed = 0,
-    motorAoffset = 0,
-    motorBoffset = 0;
+    motorBspeed = 0;
+const float motorAgain = 1.05,
+            motorBgain = 1;
 
 bool ledState = LOW;
 
@@ -50,21 +60,22 @@ void dmpDataReady() {
 }
 
 void updateMotors() {
-    updateMotorPWM(motorAspeed + motorAoffset, MOTOR_AA, MOTOR_AB);
-    updateMotorPWM(motorBspeed + motorBoffset, MOTOR_BA, MOTOR_BB);
+    updateMotorPWM(motorAgain * (motorAspeed + turnParam), MOTOR_AA, MOTOR_AB);
+    updateMotorPWM(motorBgain * (motorBspeed - turnParam), MOTOR_BA, MOTOR_BB);
 }
 
 void updateMotorPWM(int speed, const int pinA, const int pinB) {
     if (speed < 0) {
         digitalWrite(pinA, HIGH);
-        analogWrite(pinB, 255 + speed);
+        analogWrite(pinB, constrain(255 + speed, 0, 255));
     } else {
         digitalWrite(pinA, LOW);
-        analogWrite(pinB, speed);
+        analogWrite(pinB, constrain(speed, 0, 255));
     }
 }
 
 void setup() {
+    delay(4000);
     pinMode(MOTOR_AA, OUTPUT);
     pinMode(MOTOR_AB, OUTPUT);
     pinMode(MOTOR_BA, OUTPUT);
@@ -77,6 +88,7 @@ void setup() {
 
     ir.enableIRIn();
 
+    /* Serial.begin(9600); */
     Wire.begin();
     mpu.initialize();
     devStatus = mpu.dmpInitialize();
@@ -92,7 +104,8 @@ void setup() {
         attachInterrupt(0, dmpDataReady, RISING);
         mpuIntStatus = mpu.getIntStatus();
         packetSize = mpu.dmpGetFIFOPacketSize();
-        delay(5000);
+
+        delay(10000);
         dmpReady = true;
     }
 }
@@ -110,12 +123,28 @@ void loop() {
     while (!mpuInterrupt && fifoCount < packetSize) {
         input = ypr[1];
         myPID.Compute();
-        motorAoffset = motorBoffset = output;
+        motorAspeed = motorBspeed = output;
         updateMotors();
 
         if (ir.decode(&irRes)) {
-            if (irRes.value == 0xFF02FD) // The OK button
-                toggleLed();
+            switch (irRes.value) {
+                case IR_OK:
+                    setPoint = SP_EQ;
+                    turnParam = 0;
+                    break;
+                case IR_UP:
+                    setPoint = SP_FWD;
+                    turnParam = 0;
+                    break;
+                case IR_LEFT:
+                    turnParam = TURN_LEFT;
+                    setPoint = SP_LEFT;
+                    break;
+                case IR_RIGHT:
+                    turnParam = TURN_RIGHT;
+                    setPoint = SP_RIGHT;
+                    break;
+            }
             ir.resume();
         }
     }
