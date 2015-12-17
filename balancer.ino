@@ -4,26 +4,34 @@
 #include <MPU6050_6Axis_MotionApps20.h>
 #include <Wire.h>
 #include <PID_v1.h>
+#include <NewPing.h>
+#include <IRremote.h>
 
-const double Kp = 900, Ki = 3500, Kd = 40;
+const double Kp = 900, Ki = 4000, Kd = 40;
 double setPoint = 0.2, input, output;
-PID myPID(&input, &output, &setPoint, Kp, Ki, Kd, REVERSE);
 
 // Pin mapping
 const int IR_PIN = 7,
+          BLUE_LED_PIN = 8,
           PING_TRIG = 4,
-          PING_ECHO = 5,
+          PING_ECHO = 10,
           MOTOR_AA = 12,
-          MOTOR_AB = 11,
+          MOTOR_AB = 6,
           MOTOR_BA = 9,
-          MOTOR_BB = 10;
+          MOTOR_BB = 5;
 
 MPU6050 mpu;
+PID myPID(&input, &output, &setPoint, Kp, Ki, Kd, REVERSE);
+NewPing sonar(PING_TRIG, PING_ECHO, 50);
+IRrecv ir(IR_PIN);
+decode_results irRes;
 
 int motorAspeed = 0,
     motorBspeed = 0,
     motorAoffset = 0,
     motorBoffset = 0;
+
+bool ledState = LOW;
 
 bool dmpReady = false;
 uint8_t mpuIntStatus;
@@ -61,14 +69,16 @@ void setup() {
     pinMode(MOTOR_AB, OUTPUT);
     pinMode(MOTOR_BA, OUTPUT);
     pinMode(MOTOR_BB, OUTPUT);
+    pinMode(BLUE_LED_PIN, OUTPUT);
     updateMotors();
     myPID.SetMode(AUTOMATIC);
     myPID.SetOutputLimits(-255, 255);
     myPID.SetSampleTime(10);
 
+    ir.enableIRIn();
+
     Wire.begin();
     mpu.initialize();
-
     devStatus = mpu.dmpInitialize();
 
     mpu.setXGyroOffset(220);
@@ -87,6 +97,11 @@ void setup() {
     }
 }
 
+void toggleLed() {
+    ledState = ledState == HIGH ? LOW : HIGH;
+    digitalWrite(BLUE_LED_PIN, ledState);
+}
+
 void loop() {
     // if programming failed, don't try to do anything
     if (!dmpReady) return;
@@ -97,6 +112,12 @@ void loop() {
         myPID.Compute();
         motorAoffset = motorBoffset = output;
         updateMotors();
+
+        if (ir.decode(&irRes)) {
+            if (irRes.value == 0xFF02FD) // The OK button
+                toggleLed();
+            ir.resume();
+        }
     }
 
     // reset interrupt flag and get INT_STATUS byte
