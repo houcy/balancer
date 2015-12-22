@@ -28,7 +28,6 @@ const int IR_PIN = 7,
           MOTOR_BA = 9,
           MOTOR_BB = 5;
 
-/* const double SP_EQ = 0.19, SP_FWD = 0.23, SP_RIGHT = 0.19, SP_LEFT = 0.2; */
 const double Kpa = 0.001, Kia = 0.0012, Kda = 0,
              Kpm = 1200, Kim = 5000, Kdm = 60,
              gyroWeight = 0.2, lowPass = 0.05;
@@ -37,12 +36,16 @@ double targetSpeed = 0, filteredSpeed = 0, targetPitch = 0, pitch = 0,
 PID pitchPID(&filteredSpeed, &targetPitch, &targetSpeed, Kpa, Kia, Kda, DIRECT);
 PID motorPID(&pitch, &motorSpeed, &targetPitch, Kpm, Kim, Kdm, REVERSE);
 const int PID_SAMPLE_TIME = 10;
+const float FALL_THRESHOLD = 0.5;
+unsigned long fallTime = 0;
+const int FALL_DELAY = 500, RAISE_DELAY = 1500;
+bool fallen = false;
 
 // Some parameters for the motor drive
 int motorAspeed = 0, motorBspeed = 0;
-const double THROTTLE_FORWARD = 110, THROTTLE_BACKWARD = -110,
-             THROTTLE_TURN = 90;
-const double TURN_LEFT = -13, TURN_RIGHT = 17, TRIM = 4;
+const double THROTTLE_FORWARD = 140, THROTTLE_BACKWARD = -140,
+             THROTTLE_TURN = 120;
+const double TURN_LEFT = -15, TURN_RIGHT = 30, TRIM_FWD = 12, TRIM_BWD = -12;
 double turnParam = 0;
 
 MPU6050 mpu;
@@ -62,7 +65,7 @@ Quaternion q;
 VectorFloat gravity;
 int16_t gyro[3] = { 0, 0, 0 };
 
-volatile bool mpuInterrupt = false;     // indicates whether MPU interrupt pin has gone high
+volatile bool mpuInterrupt = false;
 void dmpDataReady() {
     mpuInterrupt = true;
 }
@@ -130,6 +133,7 @@ void setup() {
 
     delay(5000);  // A delay for MPU calibration
     dmpReady = true;
+    digitalWrite(BLUE_LED_PIN, HIGH);
 }
 
 void loop() {
@@ -139,8 +143,18 @@ void loop() {
 }
 
 void mainLoop() {
-    pitchPID.Compute();
-    motorPID.Compute();
+    if (!fallen) {
+        if (abs(pitch) > FALL_THRESHOLD && millis() - fallTime > RAISE_DELAY) {
+            motorSpeed = 0;
+            targetSpeed = 0;
+            turnParam = 0;
+            fallTime = millis();
+            fallen = true;
+        } else {
+            pitchPID.Compute();
+            motorPID.Compute();
+        }
+    } else if (millis() - fallTime > FALL_DELAY) fallen = false;
     motorAspeed = motorBspeed = motorSpeed;
     updateMotors();
 
@@ -148,15 +162,15 @@ void mainLoop() {
         switch (irRes.value) {
             case IR_OK:
                 targetSpeed = 0;
-                turnParam = TRIM;
+                turnParam = 0;
                 break;
             case IR_UP:
                 targetSpeed = THROTTLE_FORWARD;
-                turnParam = 0;
+                turnParam = TRIM_FWD;
                 break;
             case IR_DOWN:
                 targetSpeed = THROTTLE_BACKWARD;
-                turnParam = TRIM;
+                turnParam = TRIM_BWD;
                 break;
             case IR_LEFT:
                 turnParam = TURN_LEFT;
@@ -187,7 +201,8 @@ void readMPU() {
         mpu.dmpGetGravity(&gravity, &q);
         mpu.dmpGetGyro(gyro, fifoBuffer);
         // We only need the pitch - hence no call to getYawPitchRoll
-        pitch = atan(gravity.x / sqrt(gravity.y*gravity.y + gravity.z*gravity.z));
+        pitch = atan(gravity.x / sqrt(gravity.y*gravity.y +
+            gravity.z*gravity.z));
         double speedEstimate = motorSpeed + gyroWeight * gyro[1];
         filteredSpeed = filteredSpeed -
             lowPass * (filteredSpeed - speedEstimate);
