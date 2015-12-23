@@ -5,7 +5,6 @@
 // https://github.com/jjrobots/B-ROBOT/blob/master/BROBOT/BROBOT.ino
 #include <I2Cdev.h>
 #include <MPU6050_6Axis_MotionApps20.h>
-#include <Wire.h>
 #include <PID_v1.h>
 #include <NewPing.h>
 #include <IRremote.h>
@@ -28,35 +27,39 @@ const int IR_PIN = 7,
           MOTOR_BA = 9,
           MOTOR_BB = 5;
 
-const double Kpa = 0.001, Kia = 0.0012, Kda = 0,
-             Kpm = 1200, Kim = 5000, Kdm = 60,
-             gyroWeight = 0.2, lowPass = 0.05;
+// Some constants related to the control loops
+// There's a PI loop for controlling the target pitch, given the target speed.
+// This way the robot can be made to lean forward and accelerate.
+// A PID loop then controls the motors to reach the target pitch.
+const double Kpa = 0.001, Kia = 0.0012, Kda = 0,  // target pitch control
+             Kpm = 1200,  Kim = 5000,   Kdm = 60, // motor control
+             GYRO_WEIGHT = 0.2, LOWPASS_PARAM = 0.05;
+const int PID_SAMPLE_TIME = 10;
+
+// Some motion parameters for trimming etc.
+const double FALL_THRESHOLD = 0.5;
+const int FALL_DELAY = 500, RAISE_DELAY = 1500;
+const int THROTTLE_FWD = 140, THROTTLE_BWD = -140, THROTTLE_TURN = 120,
+          TURN_LEFT = -15, TURN_RIGHT = 30, TRIM_FWD = 12, TRIM_BWD = -12;
+const int PING_INTERVAL = 250, PING_RANGE = 40;
+
+// Some necessary state variables
+int turnParam = 0;
+unsigned long fallTime = 0, lastPing = 0;
+bool fallen = false;
+// PID loops
 double targetSpeed = 0, filteredSpeed = 0, targetPitch = 0, pitch = 0,
        motorSpeed = 0;
 PID pitchPID(&filteredSpeed, &targetPitch, &targetSpeed, Kpa, Kia, Kda, DIRECT);
 PID motorPID(&pitch, &motorSpeed, &targetPitch, Kpm, Kim, Kdm, REVERSE);
-const int PID_SAMPLE_TIME = 10;
-const float FALL_THRESHOLD = 0.5;
-unsigned long fallTime = 0;
-const int FALL_DELAY = 500, RAISE_DELAY = 1500;
-bool fallen = false;
-
-// Some parameters for the motor drive
-int motorAspeed = 0, motorBspeed = 0;
-const double THROTTLE_FORWARD = 140, THROTTLE_BACKWARD = -140,
-             THROTTLE_TURN = 120;
-const double TURN_LEFT = -15, TURN_RIGHT = 30, TRIM_FWD = 12, TRIM_BWD = -12;
-double turnParam = 0;
-
+// Object for the sensors etc.
 MPU6050 mpu;
-NewPing sonar(PING_TRIG, PING_ECHO, 50);
+NewPing sonar(PING_TRIG, PING_ECHO, PING_RANGE);
 IRrecv ir(IR_PIN);
 decode_results irRes;
 
 // DMP helper variables
-bool dmpReady = false;
 uint8_t mpuIntStatus;
-uint8_t devStatus;
 uint16_t packetSize;    // expected DMP packet size (default is 42 bytes)
 uint16_t fifoCount;     // count of all bytes currently in FIFO
 uint8_t fifoBuffer[64]; // FIFO storage buffer
@@ -71,8 +74,8 @@ void dmpDataReady() {
 }
 
 void updateMotors() {
-    updateMotorPWM(motorAspeed + turnParam, MOTOR_AA, MOTOR_AB);
-    updateMotorPWM(motorBspeed - turnParam, MOTOR_BA, MOTOR_BB);
+    updateMotorPWM(motorSpeed + turnParam, MOTOR_AA, MOTOR_AB);
+    updateMotorPWM(motorSpeed - turnParam, MOTOR_BA, MOTOR_BB);
 }
 
 void updateMotorPWM(int speed, const int pinA, const int pinB) {
@@ -99,7 +102,7 @@ void setup() {
     ir.enableIRIn();
 
     pitchPID.SetMode(AUTOMATIC);
-    pitchPID.SetOutputLimits(-0.25, 0.25);
+    pitchPID.SetOutputLimits(-FALL_THRESHOLD, FALL_THRESHOLD);
     pitchPID.SetSampleTime(PID_SAMPLE_TIME);
     motorPID.SetMode(AUTOMATIC);
     motorPID.SetOutputLimits(-255, 255);
@@ -108,9 +111,15 @@ void setup() {
     #ifdef DEBUG_ON
         Serial.begin(9600);
     #endif
-    Wire.begin();
+    Fastwire::setup(400, true);
     mpu.initialize();
-    devStatus = mpu.dmpInitialize();
+
+    if (mpu.dmpInitialize() != 0) {
+        #ifdef DEBUG_ON
+            Serial.println("DMP initialization failed");
+        #endif
+        return;
+    }
 
     mpu.setXAccelOffset(-2946);
     mpu.setYAccelOffset(1570);
@@ -119,57 +128,60 @@ void setup() {
     mpu.setYGyroOffset(8);
     mpu.setZGyroOffset(25);
 
-    if (devStatus != 0) {
-        #ifdef DEBUG_ON
-            Serial.println("DMP initialization failed");
-        #endif
-        return;
-    }
-
     mpu.setDMPEnabled(true);
     attachInterrupt(0, dmpDataReady, RISING);
     mpuIntStatus = mpu.getIntStatus();
     packetSize = mpu.dmpGetFIFOPacketSize();
 
     delay(5000);  // A delay for MPU calibration
-    dmpReady = true;
     digitalWrite(BLUE_LED_PIN, HIGH);
 }
 
 void loop() {
-    if (!dmpReady) return;
     while (!mpuInterrupt && fifoCount < packetSize) mainLoop();
     readMPU();
 }
 
+void pingCheck() {
+    digitalWrite(BLUE_LED_PIN, sonar.check_timer() ? LOW : HIGH);
+}
+
 void mainLoop() {
+    unsigned long currentTime = millis();
     if (!fallen) {
-        if (abs(pitch) > FALL_THRESHOLD && millis() - fallTime > RAISE_DELAY) {
+        if (abs(pitch) > FALL_THRESHOLD &&
+            currentTime - fallTime > RAISE_DELAY) {
             motorSpeed = 0;
             targetSpeed = 0;
             turnParam = 0;
-            fallTime = millis();
+            fallTime = currentTime;
             fallen = true;
         } else {
             pitchPID.Compute();
             motorPID.Compute();
         }
-    } else if (millis() - fallTime > FALL_DELAY) fallen = false;
-    motorAspeed = motorBspeed = motorSpeed;
-    updateMotors();
+    } else if (currentTime - fallTime > FALL_DELAY) fallen = false;
+
+    if (currentTime - lastPing > PING_INTERVAL) {
+        lastPing = currentTime;
+        sonar.ping_timer(pingCheck);
+    }
 
     if (ir.decode(&irRes)) {
+        #ifdef DEBUG_ON
+            Serial.println(irRes.value, HEX);
+        #endif
         switch (irRes.value) {
             case IR_OK:
                 targetSpeed = 0;
                 turnParam = 0;
                 break;
             case IR_UP:
-                targetSpeed = THROTTLE_FORWARD;
+                targetSpeed = THROTTLE_FWD;
                 turnParam = TRIM_FWD;
                 break;
             case IR_DOWN:
-                targetSpeed = THROTTLE_BACKWARD;
+                targetSpeed = THROTTLE_BWD;
                 turnParam = TRIM_BWD;
                 break;
             case IR_LEFT:
@@ -183,6 +195,8 @@ void mainLoop() {
         }
         ir.resume();
     }
+
+    updateMotors();
 }
 
 void readMPU() {
@@ -203,9 +217,9 @@ void readMPU() {
         // We only need the pitch - hence no call to getYawPitchRoll
         pitch = atan(gravity.x / sqrt(gravity.y*gravity.y +
             gravity.z*gravity.z));
-        double speedEstimate = motorSpeed + gyroWeight * gyro[1];
+        double speedEstimate = motorSpeed + GYRO_WEIGHT * gyro[1];
         filteredSpeed = filteredSpeed -
-            lowPass * (filteredSpeed - speedEstimate);
+            LOWPASS_PARAM * (filteredSpeed - speedEstimate);
         #ifdef DEBUG_ON
             Serial.println(gyro[1]);
         #endif
