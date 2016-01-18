@@ -42,6 +42,7 @@ const int FALL_DELAY = 500, RAISE_DELAY = 1500;
 const int THROTTLE_FWD = 140, THROTTLE_BWD = -140, THROTTLE_TURN = 120,
           TURN_LEFT = -15, TURN_RIGHT = 30, TRIM_FWD = 12, TRIM_BWD = -12;
 const int PING_INTERVAL = 250, PING_RANGE = 40;
+const float TARGET_PITCH_MAX = 0.22, TARGET_PITCH_MIN = -0.25;
 
 // Some necessary state variables
 int turnParam = 0;
@@ -102,7 +103,7 @@ void setup() {
     ir.enableIRIn();
 
     pitchPID.SetMode(AUTOMATIC);
-    pitchPID.SetOutputLimits(-FALL_THRESHOLD, FALL_THRESHOLD);
+    pitchPID.SetOutputLimits(TARGET_PITCH_MIN, TARGET_PITCH_MAX);
     pitchPID.SetSampleTime(PID_SAMPLE_TIME);
     motorPID.SetMode(AUTOMATIC);
     motorPID.SetOutputLimits(-255, 255);
