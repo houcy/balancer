@@ -32,7 +32,7 @@ const float TARGET_PITCH_MAX = 0.22, TARGET_PITCH_MIN = -0.2,
 // Some necessary state variables
 unsigned long reverseTime = 0, fallTime = 0, lastPing = 0;
 int turnParam = 0;
-bool fallen = true, stopped = false;
+bool fallen = true;
 // PID loops
 double filteredSpeed = 0, targetPitch = 0, pitch = 0, motorSpeed = 0,
        targetSpeed = 0;
@@ -51,8 +51,8 @@ int16_t gyro[3];
 NewPing sonar(PING_TRIG, PING_ECHO, PING_RANGE);
 
 void updateMotors() {
-    updateMotorPWM(stopped ? 0 : motorSpeed + turnParam, MOTOR_AA, MOTOR_AB);
-    updateMotorPWM(stopped ? 0 : motorSpeed - turnParam, MOTOR_BA, MOTOR_BB);
+    updateMotorPWM(motorSpeed + turnParam, MOTOR_AA, MOTOR_AB);
+    updateMotorPWM(motorSpeed - turnParam, MOTOR_BA, MOTOR_BB);
 }
 
 void updateMotorPWM(int speed, const int pinA, const int pinB) {
@@ -115,7 +115,6 @@ void forward() {
     targetSpeed = THROTTLE_FWD;
     turnParam = TRIM_FWD;
     digitalWrite(BLUE_LED_PIN, HIGH);
-    stopped = false;
     reverseTime = 0;
 }
 
@@ -123,7 +122,6 @@ void reverseAndTurn() {
     if (random(0, 2) == 0) turnParam = TRIM_LEFT;
     else turnParam = TRIM_RIGHT;
     targetSpeed = THROTTLE_BWD;
-    stopped = false;
     digitalWrite(BLUE_LED_PIN, LOW);
 }
 
@@ -134,7 +132,6 @@ void stop() {
     targetPitch = TARGET_PITCH_BALANCE;
     turnParam = 0;
     reverseTime = 0;
-    stopped = true;
     digitalWrite(BLUE_LED_PIN, LOW);
 }
 
@@ -150,9 +147,9 @@ void mainLoop() {
         if (abs(pitch) > FALL_THRESHOLD &&
             currentTime - fallTime > RAISE_DELAY) {
             // Oh no, we've fallen again!
+            stop();
             pitchPID.SetMode(MANUAL);
             motorPID.SetMode(MANUAL);
-            stop();
             fallTime = currentTime;
             fallen = true;
         } else {
@@ -203,10 +200,6 @@ void readMPU() {
         double speedEstimate = motorSpeed + GYRO_WEIGHT * gyro[1];
         filteredSpeed = filteredSpeed -
             LOWPASS_PARAM * (filteredSpeed - speedEstimate);
-
-        #ifdef DEBUG
-            Serial.println(gyro[1]);
-        #endif
     }
 }
 
